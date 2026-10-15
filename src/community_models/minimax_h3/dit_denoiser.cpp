@@ -2312,13 +2312,18 @@ void MiniMaxH3DiTLayerwiseRuntime::run(
         graph.run(audio_rows, video_rows, timestep_values, timestep_count, hidden, t_emb, input_upload_ms_, output_read_ms_);
         engine::debug::timing_log_scalar("minimax_h3.dit.layerwise.prelude_ms", engine::debug::elapsed_ms(compute_start, Clock::now()));
     }
+    std::vector<std::string> block_prefixes;
+    block_prefixes.reserve(static_cast<size_t>(cfg_.dit_layers));
+    for (int64_t i = 0; i < cfg_.dit_layers; ++i) {
+        block_prefixes.push_back("blocks." + std::to_string(i) + ".");
+    }
+
     if (mlp_chunk_tokens_ > 0) {
         for (int64_t layer = 0; layer < cfg_.dit_layers; layer += layer_batch_) {
             const int64_t end = std::min<int64_t>(layer + layer_batch_, cfg_.dit_layers);
-            std::vector<std::string> prefixes;
-            for (int64_t i = layer; i < end; ++i) {
-                prefixes.push_back("blocks." + std::to_string(i) + ".");
-            }
+            std::vector<std::string> prefixes(
+                block_prefixes.begin() + layer,
+                block_prefixes.begin() + end);
             MiniMaxH3DiTWeightStore weights(execution_, tensor_source_, weight_context_bytes_, {}, prefixes, false);
             DiTLayerwiseChunkedBlockGroupGraph graph(weights, cfg_, layout, layer, end, mlp_chunk_tokens_);
             std::vector<float> next_hidden;
@@ -2330,10 +2335,9 @@ void MiniMaxH3DiTLayerwiseRuntime::run(
     } else {
         for (int64_t layer = 0; layer < cfg_.dit_layers; layer += layer_batch_) {
             const int64_t end = std::min<int64_t>(layer + layer_batch_, cfg_.dit_layers);
-            std::vector<std::string> prefixes;
-            for (int64_t i = layer; i < end; ++i) {
-                prefixes.push_back("blocks." + std::to_string(i) + ".");
-            }
+            std::vector<std::string> prefixes(
+                block_prefixes.begin() + layer,
+                block_prefixes.begin() + end);
             MiniMaxH3DiTWeightStore weights(execution_, tensor_source_, weight_context_bytes_, {}, prefixes, false);
             DiTLayerwiseBlockGroupGraph graph(weights, cfg_, layout, layer, end);
             std::vector<float> next_hidden;
