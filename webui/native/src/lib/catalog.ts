@@ -16,9 +16,11 @@ interface PackageEntry {
 
 interface PackageSpec {
   family: string;
+  capabilities?: Record<string, string[]>;
   packages?: Array<Omit<PackageEntry, 'family'>>;
   options?: {
     request?: Array<{ name: string; required?: boolean }>;
+    session?: Array<{ name: string; description?: string; default?: unknown; min?: number; max?: number }>;
   };
   ui?: {
     builtin_voices?: string[];
@@ -39,7 +41,13 @@ const packages: PackageEntry[] = Object.values(specModules).flatMap((spec) =>
 );
 
 const specsByFamily = new Map(Object.values(specModules).map((spec) => [spec.family, spec]));
+export const modelCapabilities = Object.fromEntries(Object.values(specModules).map(spec =>
+  [spec.family, [...new Set(Object.values(spec.capabilities || {}).flat())]])) as Record<string, string[]>;
 const exposeAllGgufPackageFamilies = new Set([
+  'ming3_tts',
+  'ming3_audio',
+  'latentsync',
+  'xtts_v2',
   'canary_asr',
   'cohere_asr',
   'moss_transcribe_diarize',
@@ -51,10 +59,14 @@ const exposeAllGgufPackageFamilies = new Set([
   'firered_audio',
   'fireredtts3',
   'irodori_tts',
+  'kitten_tts2',
   'kokoro_tts',
   'meanvc2',
   'midashenglm_gen',
-  'sanotts'
+  'sanotts',
+  'mossformer2',
+  'plapre',
+  'voxtral_tts'
 ]);
 
 const hanCharacters = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u;
@@ -125,7 +137,7 @@ function relatedExposeAllGgufPackages(entry: CatalogEntry): PackageEntry[] {
   const family = packages.filter((candidate) =>
     candidate.family === entry.family && candidate.format === 'gguf');
   if (!family.length) return [];
-  if (entry.family === 'sanotts') return family;
+  if (entry.family === 'sanotts' || entry.family === 'xtts_v2') return family;
   if (!entry.download_id) return family;
   const exact = family.find((candidate) => candidate.id === entry.download_id);
   if (!exact) return relatedPackages(entry);
@@ -259,7 +271,8 @@ function packageSessionOptions(entry: PackageEntry): Record<string, string> | un
 }
 
 function installChoices(entry: CatalogEntry): InstallPackageChoice[] {
-  if (['maya1', 'gigaam_asr', 'samsone', 'sam_audio', 'tone_color_vc', 'moss_ttsd', 'moss_voicegen'].includes(entry.family)) {
+  if (['maya1', 'gigaam_asr', 'samsone', 'sam_audio', 'tone_color_vc', 'moss_ttsd', 'moss_voicegen',
+    'kugelaudio', 'crisperwhisper', 'index_echo', 'audio_flamingo', 'owsm', 'owsm_ctc', 'reuse', 'sidon', 'smart_turn'].includes(entry.family)) {
     const stem = (entry.download_id || '').replace(/_(?:q8_0|q4_k|bf16|f16|f32|orig)(?:_codec_f16(?:_decode)?)?$/, '');
     return packages.filter((candidate) => candidate.family === entry.family && candidate.format === 'gguf' &&
       candidate.id.replace(/_(?:q8_0|q4_k|bf16|f16|f32|orig)(?:_codec_f16(?:_decode)?)?$/, '') === stem)
@@ -398,6 +411,20 @@ export const parameterCatalog = Object.fromEntries(
     ])
 ) as Record<string, ParamSpec[]>;
 
+for (const [family, spec] of specsByFamily) {
+  const adapter = spec.options?.session?.find((option) => option.name === 'lora');
+  const strength = spec.options?.session?.find((option) => option.name === 'lora_scale');
+  const controls = parameterCatalog[family] || [];
+  if (!adapter || !strength || controls.some((control) => control.session_option === `${family}.lora`)) continue;
+  parameterCatalog[family] = [...controls,
+    { name: 'lora', group: 'lora', scope: 'session', session_option: `${family}.lora`,
+      type: 'text', label: 'Adapter path', default: '', info: adapter.description },
+    { name: 'lora_scale', group: 'lora', scope: 'session', session_option: `${family}.lora_scale`,
+      type: 'number', label: 'Strength', default: strength.default ?? '',
+      minimum: strength.min, maximum: strength.max, step: 0.1, info: strength.description }
+  ];
+}
+
 export const taskLabels: Record<string, string> = {
   tts: 'Text to speech',
   clon: 'Voice cloning',
@@ -412,5 +439,8 @@ export const taskLabels: Record<string, string> = {
   diar: 'Speaker diarization',
   align: 'Forced alignment',
   vdes: 'Voice design',
-  spk: 'Speaker analysis'
+  spk: 'Speaker analysis',
+  turn: 'Turn detection',
+  wake: 'Wake-word detection',
+  cls: 'Audio classification'
 };

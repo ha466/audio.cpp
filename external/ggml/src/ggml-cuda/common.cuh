@@ -604,7 +604,8 @@ template <typename T> struct block_reduce_policy<block_reduce_method::MAX, T> {
 };
 
 template <block_reduce_method reduce_method_t, const unsigned int block_size_template = 0, typename T>
-static __device__ T block_reduce(T val, T * shared_vals) {
+static __device__ T block_reduce(T val, [[maybe_unused]] T * shared_vals) {
+    // for multi-warp reductions, callers must not reuse shared_vals until all reads from this invocation have completed
     val                           = block_reduce_policy<reduce_method_t, T>::reduce(val);
     const unsigned int block_size = block_size_template == 0 ? blockDim.x : block_size_template;
     if (block_size > WARP_SIZE) {
@@ -1451,6 +1452,11 @@ struct ggml_backend_cuda_context {
     // ggml_backend_cuda_set_stream_priority(); scoped to this backend
     // instance, unlike a process-wide environment variable.
     int stream_priority = 0;
+
+    // Fold a ROUND_BF16 that directly follows RMS_NORM*MUL, ADD or SwiGLU into
+    // the producing kernel. Off by default; set through
+    // ggml_backend_cuda_set_round_bf16_fusion(), scoped to this backend instance.
+    bool round_bf16_fusion = false;
 
     ~ggml_backend_cuda_context();
 

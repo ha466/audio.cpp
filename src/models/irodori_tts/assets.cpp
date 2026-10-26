@@ -16,6 +16,12 @@ IrodoriModelConfig parse_model_config(const assets::ResourceBundle & resources) 
     const auto root = resources.parse_json("model_config");
 
     IrodoriModelConfig config;
+    config.flow_parameterization = json::optional_string(
+        root, "flow_parameterization", config.flow_parameterization);
+    if (config.flow_parameterization != "rf_velocity" &&
+        config.flow_parameterization != "meanflow") {
+        throw std::runtime_error("Irodori-TTS flow_parameterization must be rf_velocity or meanflow");
+    }
     config.latent_dim = json::optional_i64(root, "latent_dim", config.latent_dim);
     config.latent_patch_size = json::optional_i64(root, "latent_patch_size", config.latent_patch_size);
     config.model_dim = json::optional_i64(root, "model_dim", config.model_dim);
@@ -69,6 +75,11 @@ IrodoriModelConfig parse_model_config(const assets::ResourceBundle & resources) 
         json::optional_nullable_string(root, "duration_caption_pooling", config.duration_caption_pooling);
     config.max_text_len = json::optional_i64(root, "max_text_len", config.max_text_len);
     config.max_caption_len = json::optional_i64(root, "max_caption_len", config.max_text_len);
+    // Python keeps its 30 s legacy default unless ref_max_seconds is positive.
+    const float ref_max_seconds = json::optional_f32(root, "ref_max_seconds", 0.0F);
+    if (std::isfinite(ref_max_seconds) && ref_max_seconds > 0.0F) {
+        config.ref_max_seconds = ref_max_seconds;
+    }
     if (config.use_pretrained_text_encoder()) {
         if (!resources.has_file("pretrained_text_config")) {
             throw std::runtime_error("Irodori-TTS pretrained text encoder requires pretrained_text_config");
@@ -166,6 +177,16 @@ IrodoriModelConfig parse_config(const assets::ResourceBundle & resources) {
 }
 
 void validate_model_weights(const IrodoriModelConfig & config, const assets::TensorSource & source) {
+    if (config.flow_parameterization == "meanflow") {
+        assets::require_tensor_shape(source, "delta_cond_module.0.weight",
+                                     {config.model_dim, config.timestep_embed_dim});
+        assets::require_tensor_shape(source, "delta_cond_module.2.weight",
+                                     {config.model_dim, config.model_dim});
+        assets::require_tensor_shape(source, "delta_cond_module.4.weight",
+                                     {3 * config.model_dim, config.model_dim});
+    } else if (source.has_tensor("delta_cond_module.0.weight")) {
+        throw std::runtime_error("Irodori-TTS interval weights require flow_parameterization=meanflow in model_config.json");
+    }
     if (config.use_pretrained_text_encoder()) {
         assets::require_tensor_shape(
             source,
@@ -230,16 +251,18 @@ void validate_model_weights(const IrodoriModelConfig & config, const assets::Ten
         }
         assets::require_tensor_shape(source, "blocks.0.attention.wk_caption.weight", {config.model_dim, config.caption_dim_resolved()});
         assets::require_tensor_shape(source, "blocks.0.attention.wv_caption.weight", {config.model_dim, config.caption_dim_resolved()});
-        assets::require_tensor_shape(source, "duration_predictor.null_caption", {config.caption_dim_resolved()});
-        assets::require_tensor_shape(
-            source,
-            "duration_predictor.token_blocks.0.caption_modulation.weight",
-            {3 * config.duration_hidden_dim, config.caption_dim_resolved()});
     }
     if (config.use_duration_predictor) {
         assets::require_tensor_shape(source, "duration_predictor.token_input_proj.weight", {config.duration_hidden_dim, config.text_dim});
         assets::require_tensor_shape(source, "duration_predictor.token_out_proj.weight", {1, config.duration_hidden_dim});
         assets::require_tensor_shape(source, "duration_predictor.token_out_proj.bias", {1});
+        if (config.use_caption_condition) {
+            assets::require_tensor_shape(source, "duration_predictor.null_caption", {config.caption_dim_resolved()});
+            assets::require_tensor_shape(
+                source,
+                "duration_predictor.token_blocks.0.caption_modulation.weight",
+                {3 * config.duration_hidden_dim, config.caption_dim_resolved()});
+        }
     }
 }
 
@@ -293,6 +316,7 @@ float IrodoriModelConfig::caption_mlp_ratio_resolved() const noexcept {
 
 std::shared_ptr<const IrodoriTTSAssets> load_irodori_tts_assets(const std::filesystem::path & model_path) {
     auto assets = std::make_shared<IrodoriTTSAssets>();
+    assets->model_dir = std::filesystem::is_directory(model_path) ? model_path : model_path.parent_path();
     assets->resources = engine::model_spec::load_resource_bundle(
         model_path,
         engine::model_spec::default_spec_path("irodori_tts"));
